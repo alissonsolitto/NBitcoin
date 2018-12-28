@@ -691,6 +691,28 @@ namespace NBitcoin
 		/// Send bitcoins to a destination
 		/// </summary>
 		/// <param name="scriptPubKey">The destination</param>
+		/// <returns></returns>
+		public TransactionBuilder Send(Script scriptPubKey)
+		{
+			Money amount = Money.Zero;
+
+			_LastSendBuilder = null; //If the amount is dust, we don't want the fee to be paid by the previous Send
+			if (DustPrevention && amount < GetDust(scriptPubKey) && !_OpReturnTemplate.CheckScriptPubKey(scriptPubKey))
+			{
+				SendFees(amount);
+				return this;
+			}
+
+			var builder = new SendBuilder(new TxOut(amount, scriptPubKey));
+			CurrentGroup.Builders.Add(builder.Build);
+			_LastSendBuilder = builder;
+			return this;
+		}
+
+		/// <summary>
+		/// Send bitcoins to a destination
+		/// </summary>
+		/// <param name="scriptPubKey">The destination</param>
 		/// <param name="amount">The amount</param>
 		/// <returns></returns>
 		public TransactionBuilder Send(Script scriptPubKey, Money amount)
@@ -738,6 +760,25 @@ namespace NBitcoin
 			if(_LastSendBuilder == null)
 				throw new InvalidOperationException("No call to TransactionBuilder.Send has been done which can support the fees");
 			_SubstractFeeBuilder = _LastSendBuilder;
+			return this;
+		}
+
+		/// <summary>
+		/// Send destination no amout
+		/// </summary>
+		/// <param name="destination">The destination array</param>
+		/// <returns></returns>
+		/// <exception cref="System.NotSupportedException">The coin type is not supported</exception>
+		public TransactionBuilder Send(IDestination[] destination)
+		{
+			if(destination.Length > 0)
+			{
+				foreach (var item in destination)
+				{
+					Send(item.ScriptPubKey); //Money.Zero
+				}
+			}
+
 			return this;
 		}
 
