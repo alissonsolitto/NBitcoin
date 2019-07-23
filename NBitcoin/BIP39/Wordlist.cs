@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -132,7 +133,7 @@ namespace NBitcoin
 		public static async Task<Wordlist> LoadWordList(string name)
 		{
 			if(name == null)
-				throw new ArgumentNullException("name");
+				throw new ArgumentNullException(nameof(name));
 			Wordlist result = null;
 			lock(_LoadedLists)
 			{
@@ -345,6 +346,11 @@ namespace NBitcoin
 		public override string ToString()
 		{
 			return _Name;
+		}
+
+		public ReadOnlyCollection<string> GetWords()
+		{
+			return new ReadOnlyCollection<string>(_words);
 		}
 
 		public string[] GetWords(int[] indices)

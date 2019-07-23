@@ -18,7 +18,7 @@ namespace NBitcoin.BouncyCastle.Asn1
 			string identifier)
 		{
 			if(identifier == null)
-				throw new ArgumentNullException("identifier");
+				throw new ArgumentNullException(nameof(identifier));
 			if(!IsValidIdentifier(identifier))
 				throw new FormatException("string " + identifier + " not an OID");
 
@@ -133,7 +133,7 @@ namespace NBitcoin.BouncyCastle.Asn1
 			{
 				char ch = branchID[pos];
 
-				// TODO Leading zeroes?
+				// TODO Leading zeros?
 				if('0' <= ch && ch <= '9')
 				{
 					periodAllowed = true;

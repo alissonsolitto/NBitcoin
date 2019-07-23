@@ -197,7 +197,7 @@ namespace NBitcoin
 			}
 		}
 
-		internal void SetNull()
+		protected internal virtual void SetNull()
 		{
 			nVersion = CURRENT_VERSION;
 			hashPrevBlock = 0;
@@ -236,7 +236,7 @@ namespace NBitcoin
 			return GetHash();
 		}
 
-		public virtual uint256 GetHash()
+		public uint256 GetHash()
 		{
 			uint256 h = null;
 			var hashes = _Hashes;
@@ -247,9 +247,11 @@ namespace NBitcoin
 			if(h != null)
 				return h;
 
-			using(HashStream hs = new HashStream())
+			using(var hs = CreateHashStream())
 			{
-				this.ReadWrite(new BitcoinStream(hs, true));
+				var stream = new BitcoinStream(hs, true);
+				stream.SerializationTypeScope(SerializationType.Hash);
+				this.ReadWrite(stream);
 				h = hs.GetHash();
 			}
 
@@ -261,7 +263,10 @@ namespace NBitcoin
 			return h;
 		}
 
-
+		protected virtual HashStreamBase CreateHashStream()
+		{
+			return new HashStream();
+		}
 
 		[Obsolete("Call PrecomputeHash(true, true) instead")]
 		public void CacheHashes()
@@ -409,10 +414,36 @@ namespace NBitcoin
 			return MerkleNode.GetRoot(Transactions.Select(t => t.GetHash()));
 		}
 
-
-		[Obsolete("Should use Network.Consensus.ConsensusFactory.CreateNewBlock()")]
+		[Obsolete("Should use Block.CreateBlock(Network)")]
 		public Block() : this(Consensus.Main.ConsensusFactory.CreateBlockHeader())
 		{
+		}
+
+		public static Block CreateBlock(Network network)
+		{
+			return CreateBlock(network.Consensus.ConsensusFactory);
+		}
+		public static Block CreateBlock(ConsensusFactory consensusFactory)
+		{
+			return consensusFactory.CreateBlock();
+		}
+
+		public static Block CreateBlock(BlockHeader header, Network network)
+		{
+			return CreateBlock(header, network.Consensus.ConsensusFactory);
+		}
+		public static Block CreateBlock(BlockHeader header, ConsensusFactory consensusFactory)
+		{
+			var ms = new MemoryStream(100);
+			BitcoinStream bs = new BitcoinStream(ms, true);
+			bs.ConsensusFactory = consensusFactory;
+			bs.ReadWrite(header);
+
+			var block = consensusFactory.CreateBlock();
+			ms.Position = 0;
+			bs = new BitcoinStream(ms, false);
+			block.Header.ReadWrite(bs);
+			return block;
 		}
 
 		[Obsolete("Should use ConsensusFactories")]
@@ -452,7 +483,7 @@ namespace NBitcoin
 		}
 
 
-		public void ReadWrite(BitcoinStream stream)
+		public virtual void ReadWrite(BitcoinStream stream)
 		{
 			using(stream.ConsensusFactoryScope(GetConsensusFactory()))
 			{
@@ -469,6 +500,16 @@ namespace NBitcoin
 			}
 		}
 
+		/// <summary>
+		/// Get the coinbase height as specified by the first tx input of this block (BIP 34)
+		/// </summary>
+		/// <returns>Null if block has been created before BIP34 got enforced, else, the height</returns>
+		public int? GetCoinbaseHeight()
+		{
+			if(Header.Version < 2 || Transactions.Count == 0 || Transactions[0].Inputs.Count == 0)
+				return null;
+			return Transactions[0].Inputs[0].ScriptSig.ToOps().FirstOrDefault()?.GetInt();
+		}
 
 		void SetNull()
 		{
@@ -581,16 +622,13 @@ namespace NBitcoin
 		public Block CreateNextBlockWithCoinbase(BitcoinAddress address, int height, DateTimeOffset now)
 		{
 			if(address == null)
-				throw new ArgumentNullException("address");
+				throw new ArgumentNullException(nameof(address));
 			Block block = GetConsensusFactory().CreateBlock();
 			block.Header.Nonce = RandomUtils.GetUInt32();
 			block.Header.HashPrevBlock = this.GetHash();
 			block.Header.BlockTime = now;
 			var tx = block.AddTransaction(GetConsensusFactory().CreateTransaction());
-			tx.AddInput(new TxIn()
-			{
-				ScriptSig = new Script(Op.GetPushOp(RandomUtils.GetBytes(30)))
-			});
+			tx.Inputs.Add(scriptSig: new Script(Op.GetPushOp(RandomUtils.GetBytes(30))));
 			tx.Outputs.Add(new TxOut(address.Network.GetReward(height), address)
 			{
 				Value = address.Network.GetReward(height)
@@ -598,7 +636,10 @@ namespace NBitcoin
 			return block;
 		}
 
-
+		public int GetWeight()
+		{
+			return this.GetSerializedSize(TransactionOptions.None) * 3 + this.GetSerializedSize(TransactionOptions.All);
+		}
 
 		public Block CreateNextBlockWithCoinbase(PubKey pubkey, Money value, DateTimeOffset now, ConsensusFactory consensusFactory)
 		{
@@ -606,11 +647,8 @@ namespace NBitcoin
 			block.Header.Nonce = RandomUtils.GetUInt32();
 			block.Header.HashPrevBlock = this.GetHash();
 			block.Header.BlockTime = now;
-			var tx = block.AddTransaction(new Transaction());
-			tx.AddInput(new TxIn()
-			{
-				ScriptSig = new Script(Op.GetPushOp(RandomUtils.GetBytes(30)))
-			});
+			var tx = block.AddTransaction(consensusFactory.CreateTransaction());
+			tx.Inputs.Add(scriptSig: new Script(Op.GetPushOp(RandomUtils.GetBytes(30))));
 			tx.Outputs.Add(new TxOut()
 			{
 				Value = value,
@@ -678,7 +716,7 @@ namespace NBitcoin
 			if(consensusFactory == null)
 				throw new ArgumentNullException(nameof(consensusFactory));
 			var block = consensusFactory.CreateBlock();
-			block.ReadWrite(Encoders.Hex.DecodeData(hex));
+			block.ReadWrite(Encoders.Hex.DecodeData(hex), consensusFactory);
 			return block;
 		}
 
@@ -705,7 +743,7 @@ namespace NBitcoin
 			if(consensusFactory == null)
 				throw new ArgumentNullException(nameof(consensusFactory));
 			var block = consensusFactory.CreateBlock();
-			block.ReadWrite(hex);
+			block.ReadWrite(hex, consensusFactory);
 			return block;
 		}
 

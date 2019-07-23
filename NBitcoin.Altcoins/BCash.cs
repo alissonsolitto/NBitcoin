@@ -176,6 +176,11 @@ namespace NBitcoin.Altcoins
 				capabilities.SupportWitness = false;
 				return capabilities;
 			}
+
+			public override Transaction CreateTransaction()
+			{
+				return new ForkIdTransaction(0x00, false, this);
+			}
 		}
 
 		public class BTrashPubKeyAddress : BitcoinPubKeyAddress
@@ -221,23 +226,25 @@ namespace NBitcoin.Altcoins
 
 			public override bool TryParse<T>(string str, Network network, out T result)
 			{
-				if(typeof(BitcoinAddress).GetTypeInfo().IsAssignableFrom(typeof(T).GetTypeInfo()))
+				var prefix = _Prefix;
+				str = str.Trim();
+				if(str.StartsWith($"{prefix}:", StringComparison.OrdinalIgnoreCase))
 				{
-					var prefix = _Prefix;
-					str = str.Trim();
-					if(str.StartsWith($"{prefix}:", StringComparison.OrdinalIgnoreCase))
+					try
 					{
-						try
+						var addr = BCashAddr.BchAddr.DecodeAddress(str, prefix, network);
+						if (addr.Type == BCashAddr.BchAddr.CashType.P2PKH && typeof(T).GetTypeInfo().IsAssignableFrom(typeof(BTrashPubKeyAddress).GetTypeInfo()))
 						{
-							var addr = BCashAddr.BchAddr.DecodeAddress(str, prefix, network);
-							if(addr.Type == BCashAddr.BchAddr.CashType.P2PKH)
-								result = (T)(object)new BTrashPubKeyAddress(str, addr);
-							else
-								result = (T)(object)new BTrashScriptAddress(str, addr);
+							result = (T)(object)new BTrashPubKeyAddress(str, addr);
 							return true;
 						}
-						catch { }
+						else if (addr.Type == BCashAddr.BchAddr.CashType.P2SH && typeof(T).GetTypeInfo().IsAssignableFrom(typeof(BTrashScriptAddress).GetTypeInfo()))
+						{
+							result = (T)(object)new BTrashScriptAddress(str, addr);
+							return true;
+						}
 					}
+					catch { }
 				}
 				return base.TryParse(str, network, out result);
 			}
@@ -812,7 +819,7 @@ namespace BCashAddr
 		}
 
 		/// <summary>
-		/// Converts an array of 8-bit integers into an array of 5-bit integers, right-padding with zeroes if necessary
+		/// Converts an array of 8-bit integers into an array of 5-bit integers, right-padding with zeros if necessary
 		/// </summary>
 		/// <param name="data"></param>
 		/// <returns></returns>
@@ -823,7 +830,7 @@ namespace BCashAddr
 
 		/// <summary>
 		/// Converts an array of 5-bit integers back into an array of 8-bit integers
-		/// removing extra zeroes left from padding if necessary.
+		/// removing extra zeros left from padding if necessary.
 		/// Throws a ValidationError if input is not a zero-padded array of 8-bit integers
 		/// </summary>
 		/// <param name="data"></param>
@@ -849,9 +856,9 @@ namespace BCashAddr
 		/// <returns></returns>
 		public static byte[] Convert(byte[] data, int from, int to, bool strictMode = false)
 		{
-			Validation.Validate(from > 0, "Invald 'from' parameter");
-			Validation.Validate(to > 0, "Invald 'to' parameter");
-			Validation.Validate(data.Length > 0, "Invald data");
+			Validation.Validate(from > 0, "Invalid 'from' parameter");
+			Validation.Validate(to > 0, "Invalid 'to' parameter");
+			Validation.Validate(data.Length > 0, "Invalid data");
 			var d = data.Length * from / (double)to;
 			var length = strictMode ? (int)Math.Floor(d) : (int)Math.Ceiling(d);
 			var mask = (1 << to) - 1;

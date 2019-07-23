@@ -11,7 +11,25 @@ using NBitcoin.BouncyCastle.Math.EC;
 
 namespace NBitcoin
 {
-	public class PubKey : IBitcoinSerializable, IDestination
+	public enum ScriptPubKeyType
+	{
+		/// <summary>
+		/// Derive P2PKH addresses (P2PKH)
+		/// Only use this for legacy code or coins not supporting segwit
+		/// </summary>
+		Legacy,
+		/// <summary>
+		/// Derive Segwit (Bech32) addresses (P2WPKH)
+		/// This will result in the cheapest fees. This is the recommended choice.
+		/// </summary>
+		Segwit,
+		/// <summary>
+		/// Derive P2SH address of a Segwit address (P2WPKH-P2SH)
+		/// Use this when you worry that your users do not support Bech address format.
+		/// </summary>
+		SegwitP2SH
+	}
+	public class PubKey : IBitcoinSerializable, IDestination, IComparable<PubKey>, IEquatable<PubKey>
 	{
 		/// <summary>
 		/// Create a new Public key from string
@@ -38,7 +56,7 @@ namespace NBitcoin
 		public PubKey(byte[] bytes, bool @unsafe)
 		{
 			if(bytes == null)
-				throw new ArgumentNullException("bytes");
+				throw new ArgumentNullException(nameof(bytes));
 			if(!Check(bytes, false))
 			{
 				throw new FormatException("Invalid public key");
@@ -60,7 +78,7 @@ namespace NBitcoin
 		}
 
 		ECKey _ECKey;
-		ECKey ECKey
+		internal ECKey ECKey
 		{
 			get
 			{
@@ -69,6 +87,9 @@ namespace NBitcoin
 				return _ECKey;
 			}
 		}
+
+
+		public int CompareTo(PubKey other) => BytesComparer.Instance.Compare(this.ToBytes(), other.ToBytes());
 
 		public PubKey Compress()
 		{
@@ -152,9 +173,29 @@ namespace NBitcoin
 			}
 		}
 
+		public BitcoinAddress GetAddress(ScriptPubKeyType type, Network network)
+		{
+			switch (type)
+			{
+				case ScriptPubKeyType.Legacy:
+					return this.Hash.GetAddress(network);
+				case ScriptPubKeyType.Segwit:
+					if (!network.Consensus.SupportSegwit)
+						throw new NotSupportedException("This network does not support segwit");
+					return this.WitHash.GetAddress(network);
+				case ScriptPubKeyType.SegwitP2SH:
+					if (!network.Consensus.SupportSegwit)
+						throw new NotSupportedException("This network does not support segwit");
+					return this.WitHash.ScriptPubKey.Hash.GetAddress(network);
+				default:
+					throw new NotSupportedException("Unsupported ScriptPubKeyType");
+			}
+		}
+
+		[Obsolete("Use GetAddress(ScriptPubKeyType.Legacy, network) instead")]
 		public BitcoinPubKeyAddress GetAddress(Network network)
 		{
-			return network.CreateBitcoinAddress(this.Hash);
+			return (BitcoinPubKeyAddress)GetAddress(ScriptPubKeyType.Legacy, network);
 		}
 
 		public BitcoinScriptAddress GetScriptAddress(Network network)
@@ -163,6 +204,10 @@ namespace NBitcoin
 			return new BitcoinScriptAddress(redeem.Hash, network);
 		}
 
+		public HDFingerprint GetHDFingerPrint()
+		{
+			return new HDFingerprint(this.Hash.ToBytes(true), 0);
+		}
 
 		public bool Verify(uint256 hash, ECDSASignature sig)
 		{
@@ -171,6 +216,21 @@ namespace NBitcoin
 		public bool Verify(uint256 hash, byte[] sig)
 		{
 			return Verify(hash, ECDSASignature.FromDER(sig));
+		}
+
+		public Script GetScriptPubKey(ScriptPubKeyType type)
+		{
+			switch (type)
+			{
+				case ScriptPubKeyType.Legacy:
+					return Hash.ScriptPubKey;
+				case ScriptPubKeyType.Segwit:
+					return WitHash.ScriptPubKey;
+				case ScriptPubKeyType.SegwitP2SH:
+					return WitHash.ScriptPubKey.Hash.ScriptPubKey;
+				default:
+					throw new NotSupportedException();
+			}
 		}
 
 		public string ToHex()
@@ -348,8 +408,9 @@ namespace NBitcoin
 			PubKey item = obj as PubKey;
 			if(item == null)
 				return false;
-			return ToHex().Equals(item.ToHex());
+			return Equals(item);
 		}
+		public bool Equals(PubKey pk) => pk != null && Utils.ArrayEqual(vch, pk.vch);
 		public static bool operator ==(PubKey a, PubKey b)
 		{
 			if(System.Object.ReferenceEquals(a, b))
@@ -459,6 +520,33 @@ namespace NBitcoin
 			var pubkey = ECKey.Secp256k1.Curve.CreatePoint(q.XCoord.ToBigInteger(), q.YCoord.ToBigInteger());
 			pubkey = pubkey.Normalize();
 			return new ECKey(pubkey.GetEncoded(true), false).GetPubKey(true);
+		}
+
+		public string Encrypt(string message)
+		{
+			if(string.IsNullOrEmpty(message))
+				throw new ArgumentNullException(nameof(message));
+
+			var bytes = Encoding.UTF8.GetBytes(message);
+			return Encoders.Base64.EncodeData(Encrypt(bytes));
+		}
+
+		public byte[] Encrypt(byte[] message)
+		{
+			if(message is null)
+				throw new ArgumentNullException(nameof(message));
+			var ephemeral = new Key();
+			var sharedKey = Hashes.SHA512(GetSharedPubkey(ephemeral).ToBytes());
+			var iv = sharedKey.SafeSubarray(0, 16);
+			var encryptionKey = sharedKey.SafeSubarray(16, 16);
+			var hashingKey = sharedKey.SafeSubarray(32);
+
+			var aes = new AesBuilder().SetKey(encryptionKey).SetIv(iv).IsUsedForEncryption(true).Build();
+			var cipherText = aes.Process(message, 0, message.Length);
+			var ephemeralPubkeyBytes = ephemeral.PubKey.ToBytes();
+			var encrypted = Encoders.ASCII.DecodeData("BIE1").Concat(ephemeralPubkeyBytes, cipherText);
+			var hashMAC = Hashes.HMACSHA256(hashingKey, encrypted);
+			return encrypted.Concat(hashMAC);
 		}
 
 		public BitcoinWitPubKeyAddress GetSegwitAddress(Network network)

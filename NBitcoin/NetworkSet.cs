@@ -32,9 +32,9 @@ namespace NBitcoin
 	}
 	public abstract class NetworkSetBase : INetworkSet
 	{
+		object l = new object();
 		public NetworkSetBase()
 		{
-			_LazyRegistered = new Lazy<object>(RegisterLazy, false);
 		}
 		public Network GetNetwork(NetworkType networkType)
 		{
@@ -50,31 +50,44 @@ namespace NBitcoin
 			throw new NotSupportedException(networkType.ToString());
 		}
 
+		volatile bool _Registered;
+		volatile bool _Registering;
 		public void EnsureRegistered()
 		{
-			if(_LazyRegistered.IsValueCreated)
+			if(_Registered)
 				return;
-			// This will cause RegisterLazy to evaluate
-			new Lazy<object>[] { _LazyRegistered }.Select(o => o.Value != null).ToList();
-		}
-		Lazy<object> _LazyRegistered;
-
-		object RegisterLazy()
-		{
-			var builder = CreateMainnet();
-			builder.SetNetworkType(NetworkType.Mainnet);
-			builder.SetNetworkSet(this);
-			_Mainnet = builder.BuildAndRegister();
-			builder = CreateTestnet();
-			builder.SetNetworkType(NetworkType.Testnet);
-			builder.SetNetworkSet(this);
-			_Testnet = builder.BuildAndRegister();
-			builder = CreateRegtest();
-			builder.SetNetworkType(NetworkType.Regtest);
-			builder.SetNetworkSet(this);
-			_Regtest = builder.BuildAndRegister();
-			PostInit();
-			return null;
+			lock(l)
+			{
+				if(_Registered)
+					return;
+				if(_Registering)
+					throw new InvalidOperationException("It seems like you are recursively accessing a Network which is not yet built.");
+				_Registering = true;
+				var builder = CreateMainnet();
+				if (builder != null)
+				{
+					builder.SetNetworkType(NetworkType.Mainnet);
+					builder.SetNetworkSet(this);
+					_Mainnet = builder.BuildAndRegister();
+				}
+				builder = CreateTestnet();
+				if (builder != null)
+				{
+					builder.SetNetworkType(NetworkType.Testnet);
+					builder.SetNetworkSet(this);
+					_Testnet = builder.BuildAndRegister();
+				}
+				builder = CreateRegtest();
+				if (builder != null)
+				{
+					builder.SetNetworkType(NetworkType.Regtest);
+					builder.SetNetworkSet(this);
+					_Regtest = builder.BuildAndRegister();
+				}
+				_Registered = true;
+				_Registering = false;
+				PostInit();
+			}
 		}
 
 		protected virtual void PostInit()
@@ -92,8 +105,7 @@ namespace NBitcoin
 		{
 			get
 			{
-				if(_Mainnet == null)
-					EnsureRegistered();
+				EnsureRegistered();
 				return _Mainnet;
 			}
 		}
@@ -103,8 +115,7 @@ namespace NBitcoin
 		{
 			get
 			{
-				if(_Testnet == null)
-					EnsureRegistered();
+				EnsureRegistered();
 				return _Testnet;
 			}
 		}
@@ -114,73 +125,84 @@ namespace NBitcoin
 		{
 			get
 			{
-				if(_Regtest == null)
-					EnsureRegistered();
+				EnsureRegistered();
 				return _Regtest;
 			}
 		}
 
-		public abstract string CryptoCode { get; }
+		public abstract string CryptoCode
+		{
+			get;
+		}
 
 #if !NOFILEIO
-		protected void RegisterDefaultCookiePath(string folderName)
-		{
 
+		protected class FolderName
+		{
+			public string TestnetFolder
+			{
+				get; set;
+			} = "testnet3";
+			public string RegtestFolder { get; set; } = "regtest";
+			public string MainnetFolder { get; set; }
+		}
+
+		protected void RegisterDefaultCookiePath(string folderName, FolderName folder = null)
+		{
+			folder = folder ?? new FolderName();
 			var home = Environment.GetEnvironmentVariable("HOME");
 			var localAppData = Environment.GetEnvironmentVariable("APPDATA");
 
 			if(string.IsNullOrEmpty(home) && string.IsNullOrEmpty(localAppData))
 				return;
 
-			if(!string.IsNullOrEmpty(home))
+			if(!string.IsNullOrEmpty(home) && string.IsNullOrEmpty(localAppData))
 			{
 				var bitcoinFolder = Path.Combine(home, "." + folderName.ToLowerInvariant());
 
-				var mainnet = Path.Combine(bitcoinFolder, ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Mainnet, mainnet);
+				if (Mainnet != null)
+				{
+					var mainnet = folder.MainnetFolder == null ? Path.Combine(bitcoinFolder, ".cookie")
+						                                       : Path.Combine(bitcoinFolder, folder.MainnetFolder, ".cookie"); ;
+					RPCClient.RegisterDefaultCookiePath(Mainnet, mainnet);
+				}
 
-				var testnet = Path.Combine(bitcoinFolder, "testnet3", ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Testnet, testnet);
+				if (Testnet != null)
+				{
+					var testnet = Path.Combine(bitcoinFolder, folder.TestnetFolder, ".cookie");
+					RPCClient.RegisterDefaultCookiePath(Testnet, testnet);
+				}
 
-				var regtest = Path.Combine(bitcoinFolder, "regtest", ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Regtest, regtest);
+				if (Regtest != null)
+				{
+					var regtest = Path.Combine(bitcoinFolder, folder.RegtestFolder, ".cookie");
+					RPCClient.RegisterDefaultCookiePath(Regtest, regtest);
+				}
 			}
 			else if(!string.IsNullOrEmpty(localAppData))
 			{
 				var bitcoinFolder = Path.Combine(localAppData, char.ToUpperInvariant(folderName[0]) + folderName.Substring(1));
+				if (Mainnet != null)
+				{
+					var mainnet = folder.MainnetFolder == null ? Path.Combine(bitcoinFolder, ".cookie")
+															   : Path.Combine(bitcoinFolder, folder.MainnetFolder, ".cookie");
+					RPCClient.RegisterDefaultCookiePath(Mainnet, mainnet);
+				}
 
-				var mainnet = Path.Combine(bitcoinFolder, ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Mainnet, mainnet);
+				if (Testnet != null)
+				{
+					var testnet = Path.Combine(bitcoinFolder, folder.TestnetFolder, ".cookie");
+					RPCClient.RegisterDefaultCookiePath(Testnet, testnet);
+				}
 
-				var testnet = Path.Combine(bitcoinFolder, "testnet3", ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Testnet, testnet);
-
-				var regtest = Path.Combine(bitcoinFolder, "regtest", ".cookie");
-				RPCClient.RegisterDefaultCookiePath(Regtest, regtest);
+				if (Regtest != null)
+				{
+					var regtest = Path.Combine(bitcoinFolder, folder.RegtestFolder, ".cookie");
+					RPCClient.RegisterDefaultCookiePath(Regtest, regtest);
+				}
 			}
 		}
 
-		public static void RegisterDefaultCookiePath(Network network, params string[] subfolders)
-		{
-			var home = Environment.GetEnvironmentVariable("HOME");
-			var localAppData = Environment.GetEnvironmentVariable("APPDATA");
-			if(!string.IsNullOrEmpty(home))
-			{
-				var pathList = new List<string> { home, ".dash" };
-				pathList.AddRange(subfolders);
-
-				var fullPath = Path.Combine(pathList.ToArray());
-				RPCClient.RegisterDefaultCookiePath(network, fullPath);
-			}
-			else if(!string.IsNullOrEmpty(localAppData))
-			{
-				var pathList = new List<string> { localAppData, "Dash" };
-				pathList.AddRange(subfolders);
-
-				var fullPath = Path.Combine(pathList.ToArray());
-				RPCClient.RegisterDefaultCookiePath(network, fullPath);
-			}
-		}
 #else
 		public static void RegisterDefaultCookiePath(Network network, params string[] subfolders) {}
 		protected void RegisterDefaultCookiePath(string folderName) {}

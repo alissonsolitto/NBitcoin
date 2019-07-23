@@ -9,7 +9,7 @@ namespace NBitcoin
 {
 
 	/// <summary>
-	/// This class provide a hook for additionnal string format in altcoin network
+	/// This class provide a hook for additional string format in altcoin network
 	/// </summary>
     public class NetworkStringParser
     {
@@ -25,6 +25,10 @@ namespace NBitcoin
 			return false;
 		}
 
+		public virtual Base58CheckEncoder GetBase58CheckEncoder()
+		{
+			return (Base58CheckEncoder)Encoders.Base58Check;
+		}
 
 		public virtual BitcoinPubKeyAddress CreateP2PKH(KeyId keyId, Network network)
 		{

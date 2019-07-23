@@ -36,11 +36,11 @@ namespace NBitcoin.Tests
 				builder.StartAll();
 				var info = client.GetChainInfoAsync().Result;
 				Assert.Equal("regtest", info.Chain);
-				Assert.Equal(new ChainedBlock(Network.RegTest.GetGenesis().Header, 0).ChainWork, info.ChainWork);
+				Assert.Equal(new ChainedBlock(Network.RegTest.GetGenesis().Header, 0).GetChainWork(false), info.ChainWork);
 				rpc.Generate(10);
 				var chain = node.CreateNodeClient().GetChain();
 				info = client.GetChainInfoAsync().Result;
-				Assert.Equal(info.ChainWork, chain.Tip.ChainWork);
+				Assert.Equal(info.ChainWork, chain.Tip.GetChainWork(false));
 			}
 		}
 
@@ -102,13 +102,13 @@ namespace NBitcoin.Tests
 				var k = new Key().GetBitcoinSecret(Network.RegTest);
 				rpc.Generate(102);
 				rpc.ImportPrivKey(k);
-				rpc.SendToAddress(k.GetAddress(), Money.Coins(50m));
+				rpc.SendToAddress(k.GetAddress(ScriptPubKeyType.Legacy), Money.Coins(50m));
 				rpc.Generate(1);
 				var c = rpc.ListUnspent().First();
-				c = rpc.ListUnspent(0, 999999, k.GetAddress()).First();
+				c = rpc.ListUnspent(0, 999999, k.GetAddress(ScriptPubKeyType.Legacy)).First();
 				var outPoint = c.OutPoint;
 				var utxos = client.GetUnspentOutputsAsync(new[] { outPoint }, true).Result;
-				Assert.Equal(1, utxos.Outputs.Length);
+				Assert.Single(utxos.Outputs);
 				Assert.Equal(0, (int)utxos.Outputs[0].Version);
 				Assert.Equal(Money.Coins(50m), utxos.Outputs[0].Output.Value);
 
@@ -129,9 +129,9 @@ namespace NBitcoin.Tests
 				var txId = uint256.Parse("3a3422dfd155f1d2ffc3e46cf978a9c5698c17c187f04cfa1b93358699c4ed3f");
 				var outPoint = new OutPoint(txId, 0);
 				var utxos = client.GetUnspentOutputsAsync(new[] { outPoint }, false).Result;
-				Assert.Equal(true, utxos.Bitmap[0]);
-				Assert.Equal(false, utxos.Bitmap[1]);
-				Assert.Equal(0, utxos.Outputs.Length);
+				Assert.True(utxos.Bitmap[0]);
+				Assert.False(utxos.Bitmap[1]);
+				Assert.Empty(utxos.Outputs);
 			}
 		}
 

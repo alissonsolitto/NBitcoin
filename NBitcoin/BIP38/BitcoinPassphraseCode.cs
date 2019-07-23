@@ -187,7 +187,7 @@ namespace NBitcoin
 				.Concat(ownerEntropy)
 				.Concat(passpoint)
 				.ToArray();
-			return Encoders.Base58Check.EncodeData(bytes);
+			return network.NetworkStringParser.GetBase58CheckEncoder().EncodeData(bytes);
 		}
 
 		public BitcoinPassphraseCode(string wif, Network expectedNetwork = null)
@@ -233,7 +233,7 @@ namespace NBitcoin
 			pubKey = isCompressed ? pubKey.Compress() : pubKey.Decompress();
 
 			//call it generatedaddress.
-			var generatedaddress = pubKey.GetAddress(Network);
+			var generatedaddress = pubKey.GetAddress(ScriptPubKeyType.Legacy, Network);
 
 			//Take the first four bytes of SHA256(SHA256(generatedaddress)) and call it addresshash.
 			var addresshash = BitcoinEncryptedSecretEC.HashAddress(generatedaddress);
@@ -275,7 +275,7 @@ namespace NBitcoin
 					.Concat(encryptedpointb)
 					.ToArray();
 
-				return new BitcoinConfirmationCode(Encoders.Base58Check.EncodeData(confirmBytes), Network);
+				return new BitcoinConfirmationCode(Network.NetworkStringParser.GetBase58CheckEncoder().EncodeData(confirmBytes), Network);
 			});
 		}
 

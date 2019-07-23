@@ -362,7 +362,7 @@ namespace NBitcoin.BouncyCastle.Math.EC
 		protected virtual void CheckPoints(ECPoint[] points, int off, int len)
 		{
 			if(points == null)
-				throw new ArgumentNullException("points");
+				throw new ArgumentNullException(nameof(points));
 			if(off < 0 || len < 0 || (off > (points.Length - len)))
 				throw new ArgumentException("invalid range specified", "points");
 
@@ -793,7 +793,7 @@ namespace NBitcoin.BouncyCastle.Math.EC
          * D.1.6) The other solution is <code>z + 1</code>.
          *
          * @param beta
-         *            The value to solve the qradratic equation for.
+         *            The value to solve the quadratic equation for.
          * @return the solution for <code>z<sup>2</sup> + z = beta</code> or
          *         <code>null</code> if no solution exists.
          */

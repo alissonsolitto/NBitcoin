@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using NBitcoin.Crypto;
+﻿using NBitcoin.Crypto;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -66,22 +65,22 @@ namespace NBitcoin
 
 	public class TransactionChecker
 	{
-		public TransactionChecker(Transaction tx, int index, Money amount, PrecomputedTransactionData precomputedTransactionData)
+		public TransactionChecker(Transaction tx, int index, TxOut spentOutput, PrecomputedTransactionData precomputedTransactionData)
 		{
 			if(tx == null)
-				throw new ArgumentNullException("tx");
+				throw new ArgumentNullException(nameof(tx));
 			_Transaction = tx;
 			_Index = index;
-			_Amount = amount;
+			_SpentOutput = spentOutput;
 			_PrecomputedTransactionData = precomputedTransactionData;
 		}
-		public TransactionChecker(Transaction tx, int index, Money amount = null)
+		public TransactionChecker(Transaction tx, int index, TxOut spentOutput = null)
 		{
 			if(tx == null)
-				throw new ArgumentNullException("tx");
+				throw new ArgumentNullException(nameof(tx));
 			_Transaction = tx;
 			_Index = index;
-			_Amount = amount;
+			_SpentOutput = spentOutput;
 		}
 
 
@@ -120,12 +119,12 @@ namespace NBitcoin
 			}
 		}
 
-		private readonly Money _Amount;
-		public Money Amount
+		private readonly TxOut _SpentOutput;
+		public TxOut SpentOutput
 		{
 			get
 			{
-				return _Amount;
+				return _SpentOutput;
 			}
 		}
 	}
@@ -424,9 +423,17 @@ namespace NBitcoin
 			get;
 			set;
 		}
+
+		[Obsolete("Use VerifyScript(Script scriptSig, Transaction txTo, int nIn, TxOut spentOutput) instead")]
 		public bool VerifyScript(Script scriptSig, Script scriptPubKey, Transaction txTo, int nIn, Money value)
 		{
-			return VerifyScript(scriptSig, scriptPubKey, new TransactionChecker(txTo, nIn, value));
+			TxOut txOut = txTo.Outputs.CreateNewTxOut(value, scriptPubKey);
+			return VerifyScript(scriptSig, scriptPubKey, new TransactionChecker(txTo, nIn, txOut));
+		}
+
+		public bool VerifyScript(Script scriptSig, Transaction txTo, int nIn, TxOut spentOutput)
+		{
+			return VerifyScript(scriptSig, spentOutput.ScriptPubKey, new TransactionChecker(txTo, nIn, spentOutput));
 		}
 
 		public bool VerifyScript(Script scriptSig, Script scriptPubKey, TransactionChecker checker)
@@ -476,7 +483,7 @@ namespace NBitcoin
 			}
 
 			// Additional validation for spend-to-script-hash transactions:
-			if(((ScriptVerify & ScriptVerify.P2SH) != 0) && scriptPubKey.IsPayToScriptHash)
+			if(((ScriptVerify & ScriptVerify.P2SH) != 0) && scriptPubKey.IsScriptType(ScriptType.P2SH))
 			{
 				Load(evaluationCopy);
 				evaluationCopy = this;
@@ -1328,7 +1335,7 @@ namespace NBitcoin
 									var scriptCode = new Script(s._Script.Skip(pbegincodehash).ToArray());
 									// Drop the signature, since there's no way for a signature to sign itself
 									if(hashversion == (int)HashVersion.Original)
-										scriptCode.FindAndDelete(vchSig);
+										scriptCode = scriptCode.FindAndDelete(vchSig);
 
 									if(!CheckSignatureEncoding(vchSig) || !CheckPubKeyEncoding(vchPubKey, hashversion))
 									{
@@ -1393,7 +1400,7 @@ namespace NBitcoin
 									{
 										var vchSig = _stack.Top(-isig - k);
 										if(hashversion == (int)HashVersion.Original)
-											scriptCode.FindAndDelete(vchSig);
+											scriptCode = scriptCode.FindAndDelete(vchSig);
 									}
 
 									bool fSuccess = true;
@@ -1671,7 +1678,7 @@ namespace NBitcoin
 		}
 
 
-		static bool IsDefinedHashtypeSignature(byte[] vchSig)
+		bool IsDefinedHashtypeSignature(byte[] vchSig)
 		{
 			if(vchSig.Length == 0)
 			{
@@ -1679,6 +1686,10 @@ namespace NBitcoin
 			}
 
 			var temp = ~(SigHash.AnyoneCanPay);
+			if((ScriptVerify & ScriptVerify.ForkId) != 0)
+			{
+				temp = (SigHash)((uint)temp & ~(0x40u));
+			}
 			byte nHashType = (byte)(vchSig[vchSig.Length - 1] & (byte)temp);
 			if(nHashType < (byte)SigHash.All || nHashType > (byte)SigHash.Single)
 				return false;
@@ -1923,9 +1934,9 @@ namespace NBitcoin
 		}
 
 		public bool CheckSig(byte[] vchSig, byte[] vchPubKey, Script scriptCode, Transaction txTo, int nIn)
-		{
-			return CheckSig(vchSig, vchPubKey, scriptCode, new TransactionChecker(txTo, nIn), 0);
-		}
+			=> CheckSig(vchSig, vchPubKey, scriptCode, txTo, nIn, 0, null);
+		public bool CheckSig(byte[] vchSig, byte[] vchPubKey, Script scriptCode, Transaction txTo, int nIn, int sigVersion = 0, TxOut spentOutput = null)
+			=> CheckSig(vchSig, vchPubKey, scriptCode, new TransactionChecker(txTo, nIn, spentOutput), sigVersion);
 		bool CheckSig(byte[] vchSig, byte[] vchPubKey, Script scriptCode, TransactionChecker checker, int sigversion)
 		{
 			PubKey pubkey = null;
@@ -1958,7 +1969,7 @@ namespace NBitcoin
 			if(!IsAllowedSignature(scriptSig.SigHash))
 				return false;
 
-			uint256 sighash = checker.Transaction.GetSignatureHash(scriptCode, checker.Index, scriptSig.SigHash, checker.Amount, (HashVersion)sigversion, checker.PrecomputedTransactionData);
+			uint256 sighash = checker.Transaction.GetSignatureHash(scriptCode, checker.Index, scriptSig.SigHash, checker.SpentOutput, (HashVersion)sigversion, checker.PrecomputedTransactionData);
 			_SignedHashes.Add(new SignedHash()
 			{
 				ScriptCode = scriptCode,
@@ -2055,8 +2066,8 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Initializes a new instance of the <see cref="ContextStack{T}"/> 
-		/// base on another stack. This is for copy/clone. 
+		/// Initializes a new instance of the <see cref="ContextStack{T}"/>
+		/// base on another stack. This is for copy/clone.
 		/// </summary>
 		/// <param name="stack">The stack.</param>
 		public ContextStack(ContextStack<T> stack)

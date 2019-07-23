@@ -165,7 +165,7 @@ namespace NBitcoin.Tests
 				var address = (BitcoinPubKeyAddress)Network.Main.CreateBitcoinAddress(test.Address);
 				Assert.Equal(new KeyId(test.Hash160), address.Hash);
 				Assert.Equal(new KeyId(test.Hash160), secret.PrivateKey.PubKey.Hash);
-				Assert.Equal(address.Hash, secret.PrivateKey.PubKey.GetAddress(Network.Main).Hash);
+				Assert.Equal(address, secret.PrivateKey.PubKey.GetAddress(ScriptPubKeyType.Legacy, Network.Main));
 
 				var compressedSec = secret.Copy(true);
 
@@ -215,7 +215,6 @@ namespace NBitcoin.Tests
 			Assert.True(addr2.Hash == pubkey2.Hash);
 			Assert.True(addr1C.Hash == pubkey1C.Hash);
 			Assert.True(addr2C.Hash == pubkey2C.Hash);
-
 
 
 			for(int n = 0; n < 16; n++)
@@ -292,9 +291,13 @@ namespace NBitcoin.Tests
 				Assert.True(rkey2.ToHex() == pubkey2.ToHex());
 				Assert.True(rkey1C.ToHex() == pubkey1C.ToHex());
 				Assert.True(rkey2C.ToHex() == pubkey2C.ToHex());
+
+				Assert.True(sign1.IsLowR && sign1.ToDER().Length <= 70);
+				Assert.True(sign2.IsLowR && sign2.ToDER().Length <= 70);
+				Assert.True(sign1C.IsLowR && sign1C.ToDER().Length <= 70);
+				Assert.True(sign2C.IsLowR && sign2C.ToDER().Length <= 70);
 			}
 		}
-
 
 		[Fact]
 		[Trait("Core", "Core")]

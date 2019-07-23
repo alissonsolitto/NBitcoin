@@ -40,6 +40,11 @@ namespace NBitcoin.Altcoins
 			{
 				return new BitcoinGoldBlock(new BitcoinGoldBlockHeader());
 			}
+
+			public override Transaction CreateTransaction()
+			{
+				return new ForkIdTransaction(79, true, this);
+			}
 		}
 
 #pragma warning disable CS0618 // Type or member is obsolete
@@ -127,17 +132,6 @@ namespace NBitcoin.Altcoins
 				{
 					nSolution = value;
 				}
-			}
-
-			public override uint256 GetPoWHash()
-			{
-				// Different PoW after hard-fork, not implemented, but still will work if you skip pow check.
-				return base.GetPoWHash();
-			}
-
-			public override uint256 GetHash()
-			{
-				return base.GetHash();
 			}
 
 			public override void ReadWrite(BitcoinStream stream)

@@ -9,6 +9,8 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using NBitcoin.Logging;
 
 namespace NBitcoin.Protocol
 {
@@ -19,6 +21,26 @@ namespace NBitcoin.Protocol
 	/// </summary>
 	public class AddressManager : IBitcoinSerializable
 	{
+		/// <summary>
+		/// Will properly convert a endpoint to IPEndpoint
+		/// If endpoint is a DNSEndpoint, a DNS resolution will be made and all addresses added
+		/// If endpoint is a DNSEndpoint for onion, it will be converted into onioncat address
+		/// If endpoint is an IPEndpoint it is added to AddressManager
+		/// </summary>
+		/// <param name="endpoint">The endpoint to add to the address manager</param>
+		/// <param name="source">The source which advertized this endpoint (default: IPAddress.Loopback)</param>
+		/// <returns></returns>
+		public async Task AddAsync(EndPoint endpoint, IPAddress source = null)
+		{
+			if (endpoint == null)
+				throw new ArgumentNullException(nameof(endpoint));
+			if (source == null)
+				source = IPAddress.Loopback;
+			foreach (var ip in (await endpoint.ResolveToIPEndpointsAsync().ConfigureAwait(false)))
+			{
+				Add(new NetworkAddress(ip), source);
+			}
+		}
 		internal class AddressInfo : IBitcoinSerializable
 		{
 			#region IBitcoinSerializable Members
@@ -239,9 +261,8 @@ namespace NBitcoin.Protocol
 
 				return fChance;
 			}
-
-
 		}
+
 		//! total number of buckets for tried addresses
 		internal const int ADDRMAN_TRIED_BUCKET_COUNT = 256;
 
@@ -259,7 +280,6 @@ namespace NBitcoin.Protocol
 
 		//! in how many buckets for entries with new addresses a single address may occur
 		const int ADDRMAN_NEW_BUCKETS_PER_ADDRESS = 8;
-
 
 		//! how old addresses can maximally be
 		internal const int ADDRMAN_HORIZON_DAYS = 30;
@@ -311,9 +331,9 @@ namespace NBitcoin.Protocol
 		public void SavePeerFile(string filePath, Network network)
 		{
 			if(network == null)
-				throw new ArgumentNullException("network");
+				throw new ArgumentNullException(nameof(network));
 			if(filePath == null)
-				throw new ArgumentNullException("filePath");
+				throw new ArgumentNullException(nameof(filePath));
 
 			MemoryStream ms = new MemoryStream();
 			BitcoinStream stream = new BitcoinStream(ms, true);
@@ -948,7 +968,7 @@ namespace NBitcoin.Protocol
 		private static void assert(bool value)
 		{
 			if(!value)
-				throw new InvalidOperationException("Bug in AddressManager, should never happen, contact NBitcoin developpers if you see this exception");
+				throw new InvalidOperationException("Bug in AddressManager, should never happen, contact NBitcoin developers if you see this exception");
 		}
 		//! Mark an entry as connection attempted to.
 		public void Attempt(NetworkAddress addr)
@@ -1043,17 +1063,21 @@ namespace NBitcoin.Protocol
 			if(vRandom.Count == 0)
 				return null;
 
+			var rnd = new Random();
+
 			// Use a 50% chance for choosing between tried and new table entries.
 			if(nTried > 0 && (nNew == 0 || GetRandInt(2) == 0))
 			{
 				// use a tried node
 				double fChanceFactor = 1.0;
-				while(true)
-				{
+				while (true) {
 					int nKBucket = GetRandInt(ADDRMAN_TRIED_BUCKET_COUNT);
 					int nKBucketPos = GetRandInt(ADDRMAN_BUCKET_SIZE);
-					if(vvTried[nKBucket, nKBucketPos] == -1)
-						continue;
+					while(vvTried[nKBucket, nKBucketPos] == -1)
+					{
+						nKBucket = (nKBucket + rnd.Next(ADDRMAN_TRIED_BUCKET_COUNT)) % ADDRMAN_TRIED_BUCKET_COUNT;
+						nKBucketPos = (nKBucketPos + rnd.Next(ADDRMAN_BUCKET_SIZE)) % ADDRMAN_BUCKET_SIZE;
+					}
 					int nId = vvTried[nKBucket, nKBucketPos];
 					assert(mapInfo.ContainsKey(nId));
 					AddressInfo info = mapInfo[nId];
@@ -1066,12 +1090,14 @@ namespace NBitcoin.Protocol
 			{
 				// use a new node
 				double fChanceFactor = 1.0;
-				while(true)
-				{
+				while (true) {
 					int nUBucket = GetRandInt(ADDRMAN_NEW_BUCKET_COUNT);
 					int nUBucketPos = GetRandInt(ADDRMAN_BUCKET_SIZE);
-					if(vvNew[nUBucket, nUBucketPos] == -1)
-						continue;
+					while(vvNew[nUBucket, nUBucketPos] == -1)
+					{
+						nUBucket = (nUBucket + rnd.Next(ADDRMAN_NEW_BUCKET_COUNT)) % ADDRMAN_NEW_BUCKET_COUNT;
+						nUBucketPos = (nUBucketPos + rnd.Next(ADDRMAN_BUCKET_SIZE)) % ADDRMAN_BUCKET_SIZE;
+					}
 					int nId = vvNew[nUBucket, nUBucketPos];
 					assert(mapInfo.ContainsKey(nId));
 					AddressInfo info = mapInfo[nId];
@@ -1135,26 +1161,28 @@ namespace NBitcoin.Protocol
 
 		internal void DiscoverPeers(Network network, NodeConnectionParameters parameters, int peerToFind)
 		{
-			TraceCorrelation traceCorrelation = new TraceCorrelation(NodeServerTrace.Trace, "Discovering nodes");
+
+			Logs.NodeServer.LogTrace("Discovering nodes");
+
 			int found = 0;
 
-			using(traceCorrelation.Open())
 			{
 				while(found < peerToFind)
 				{
 					parameters.ConnectCancellation.ThrowIfCancellationRequested();
-					NodeServerTrace.PeerTableRemainingPeerToGet(-found + peerToFind);
+
+					Logs.NodeServer.LogTrace("Remaining peer to get {remainingPeerCount}" , (-found + peerToFind));
+					
 					List<NetworkAddress> peers = new List<NetworkAddress>();
 					peers.AddRange(this.GetAddr());
 					if(peers.Count == 0)
 					{
-						PopulateTableWithDNSNodes(network, peers);
+						PopulateTableWithDNSNodes(network, peers).GetAwaiter().GetResult();
 						PopulateTableWithHardNodes(network, peers);
 						peers = new List<NetworkAddress>(peers.OrderBy(a => RandomUtils.GetInt32()));
 						if(peers.Count == 0)
 							return;
 					}
-
 
 					CancellationTokenSource peerTableFull = new CancellationTokenSource();
 					CancellationToken loopCancel = CancellationTokenSource.CreateLinkedTokenSource(peerTableFull.Token, parameters.ConnectCancellation).Token;
@@ -1166,43 +1194,45 @@ namespace NBitcoin.Protocol
 							CancellationToken = loopCancel,
 						}, p =>
 						{
-							CancellationTokenSource timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-							var cancelConnection = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, loopCancel);
-							Node n = null;
-							try
+							using(CancellationTokenSource timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+							using(var cancelConnection = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, loopCancel))
 							{
-								var param2 = parameters.Clone();
-								param2.ConnectCancellation = cancelConnection.Token;
-								var addrman = param2.TemplateBehaviors.Find<AddressManagerBehavior>();
-								param2.TemplateBehaviors.Clear();
-								param2.TemplateBehaviors.Add(addrman);
-								n = Node.Connect(network, p.Endpoint, param2);
-								n.VersionHandshake(cancelConnection.Token);
-								n.MessageReceived += (s, a) =>
+								Node n = null;
+								try
 								{
-									var addr = (a.Message.Payload as AddrPayload);
-									if(addr != null)
+									var param2 = parameters.Clone();
+									param2.ConnectCancellation = cancelConnection.Token;
+									var addrman = param2.TemplateBehaviors.Find<AddressManagerBehavior>();
+									param2.TemplateBehaviors.Clear();
+									param2.TemplateBehaviors.Add(addrman);
+									n = Node.Connect(network, p.Endpoint, param2);
+									n.VersionHandshake(cancelConnection.Token);
+									n.MessageReceived += (s, a) =>
 									{
-										Interlocked.Add(ref found, addr.Addresses.Length);
-										if(found >= peerToFind)
-											peerTableFull.Cancel();
-									}
-								};
-								n.SendMessageAsync(new GetAddrPayload());
-								loopCancel.WaitHandle.WaitOne(2000);
-							}
-							catch
-							{
-							}
-							finally
-							{
-								if(n != null)
-									n.DisconnectAsync();
+										var addr = (a.Message.Payload as AddrPayload);
+										if(addr != null)
+										{
+											Interlocked.Add(ref found, addr.Addresses.Length);
+											if(found >= peerToFind)
+												peerTableFull.Cancel();
+										}
+									};
+									n.SendMessageAsync(new GetAddrPayload());
+									loopCancel.WaitHandle.WaitOne(2000);
+								}
+								catch
+								{
+								}
+								finally
+								{
+									if(n != null)
+										n.DisconnectAsync();
+								}
 							}
 							if(found >= peerToFind)
 								peerTableFull.Cancel();
 							else
-								NodeServerTrace.Information("Need " + (-found + peerToFind) + " more peers");
+								Logs.NodeServer.LogInformation("Need {neededPeerCount} more peers", (-found + peerToFind));
 						});
 					}
 					catch(OperationCanceledException)
@@ -1214,21 +1244,20 @@ namespace NBitcoin.Protocol
 			}
 		}
 
-		private static void PopulateTableWithDNSNodes(Network network, List<NetworkAddress> peers)
+		private static Task PopulateTableWithDNSNodes(Network network, List<NetworkAddress> peers)
 		{
-			peers.AddRange(network.DNSSeeds
-				.SelectMany(d =>
+			return Task.WhenAll(network.DNSSeeds
+				.Select(async dns =>
 				{
 					try
 					{
-						return d.GetAddressNodes();
+						return (await dns.GetAddressNodesAsync(network.DefaultPort).ConfigureAwait(false)).Select(o => new NetworkAddress(o)).ToArray();
 					}
-					catch(Exception)
+					catch
 					{
-						return new IPAddress[0];
+						return new NetworkAddress[0];
 					}
 				})
-				.Select(d => new NetworkAddress(d, network.DefaultPort))
 				.ToArray());
 		}
 

@@ -65,10 +65,10 @@ namespace NBitcoin.Crypto
 		}
 
 
-		public ECDSASignature Sign(uint256 hash)
+		public ECDSASignature Sign(uint256 hash, bool useLowR = true)
 		{
 			AssertPrivateKey();
-			var signer = new DeterministicECDSA();
+			var signer = new DeterministicECDSA(useLowR);
 			signer.setPrivateKey(PrivateKey);
 			var sig = ECDSASignature.FromDER(signer.signHash(hash.ToBytes()));
 			return sig.MakeCanonical();
@@ -122,7 +122,7 @@ namespace NBitcoin.Crypto
 			if(sig.S.SignValue < 0)
 				throw new ArgumentException("s should be positive");
 			if(message == null)
-				throw new ArgumentNullException("message");
+				throw new ArgumentNullException(nameof(message));
 
 
 			var curve = ECKey.Secp256k1;

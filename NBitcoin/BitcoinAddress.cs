@@ -5,14 +5,14 @@ using System.Linq;
 namespace NBitcoin
 {
 	/// <summary>
-	/// Base58 representaiton of a script hash
+	/// Base58 representation of a script hash
 	/// </summary>
 	public class BitcoinScriptAddress : BitcoinAddress, IBase58Data
 	{
 		public BitcoinScriptAddress(string base58, Network expectedNetwork)
 			: base(Validate(base58, ref expectedNetwork), expectedNetwork)
 		{
-			var decoded = Encoders.Base58Check.DecodeData(base58);
+			var decoded = (expectedNetwork == null ? Encoders.Base58Check : expectedNetwork.NetworkStringParser.GetBase58CheckEncoder()).DecodeData(base58);
 			_Hash = new ScriptId(new uint160(decoded.Skip(expectedNetwork.GetVersionBytes(Base58Type.SCRIPT_ADDRESS, true).Length).ToArray()));
 		}
 
@@ -27,9 +27,9 @@ namespace NBitcoin
 		private static string Validate(string base58, ref Network expectedNetwork)
 		{
 			if(base58 == null)
-				throw new ArgumentNullException("base58");
+				throw new ArgumentNullException(nameof(base58));
 			var networks = expectedNetwork == null ? Network.GetNetworks() : new[] { expectedNetwork };
-			var data = Encoders.Base58Check.DecodeData(base58);
+			var data = (expectedNetwork == null ? Encoders.Base58Check : expectedNetwork.NetworkStringParser.GetBase58CheckEncoder()).DecodeData(base58);
 			foreach(var network in networks)
 			{
 				var versionBytes = network.GetVersionBytes(Base58Type.SCRIPT_ADDRESS, false);
@@ -54,7 +54,7 @@ namespace NBitcoin
 		private static string NotNull(ScriptId scriptId)
 		{
 			if(scriptId == null)
-				throw new ArgumentNullException("scriptId");
+				throw new ArgumentNullException(nameof(scriptId));
 			return null;
 		}
 
@@ -96,7 +96,7 @@ namespace NBitcoin
 		public static BitcoinAddress Create(string str, Network expectedNetwork)
 		{
 			if(str == null)
-				throw new ArgumentNullException("base58");
+				throw new ArgumentNullException(nameof(str));
 			return Network.Parse<BitcoinAddress>(str, expectedNetwork);
 		}
 
@@ -110,16 +110,16 @@ namespace NBitcoin
 		public static BitcoinAddress Create(string str)
 		{
 			if(str == null)
-				throw new ArgumentNullException("base58");
+				throw new ArgumentNullException(nameof(str));
 			return Network.Parse<BitcoinAddress>(str, null);
 		}
 
 		internal protected BitcoinAddress(string str, Network network)
 		{
 			if(network == null)
-				throw new ArgumentNullException("network");
+				throw new ArgumentNullException(nameof(network));
 			if(str == null)
-				throw new ArgumentNullException("str");
+				throw new ArgumentNullException(nameof(str));
 			_Str = str;
 			_Network = network;
 		}

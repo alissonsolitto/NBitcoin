@@ -1,5 +1,4 @@
 ﻿using System.Runtime.InteropServices;
-using NBitcoin.Crypto;
 using NBitcoin.DataEncoders;
 using System;
 using System.Collections.Generic;
@@ -119,11 +118,16 @@ namespace NBitcoin
 		WitnessPubkeyType = (1U << 15),
 
 		/// <summary>
+		/// Some altcoins like BCash and BGold requires ForkId inside the sigHash
+		/// </summary>
+		ForkId = (1U << 29),
+
+		/// <summary>
 		/// Mandatory script verification flags that all new blocks must comply with for
 		/// them to be valid. (but old blocks may not comply with) Currently just P2SH,
 		/// but in the future other flags may be added, such as a soft-fork to enforce
 		/// strict DER encoding.
-		/// 
+		///
 		/// Failing one of these tests may trigger a DoS ban - see CheckInputs() for
 		/// details.
 		/// </summary>
@@ -148,7 +152,19 @@ namespace NBitcoin
 			| Witness
 			| DiscourageUpgradableWitnessProgram
 			| NullFail
-			| MinimalIf
+			| MinimalIf,
+
+		/// <summary>
+		/// Strict consensus script verification flags that are checked by the Bitcoin Core
+		/// consensus library before validating the transaction.
+		/// </summary>
+		Consensus =
+			  ScriptVerify.DerSig
+			| ScriptVerify.P2SH
+			| ScriptVerify.NullDummy
+			| ScriptVerify.CheckLockTimeVerify
+			| ScriptVerify.CheckSequenceVerify
+			| ScriptVerify.Witness
 	}
 
 	/// <summary>
@@ -322,6 +338,17 @@ namespace NBitcoin
 		Witness = 1
 	}
 
+	public enum ScriptType
+	{
+		Witness,
+		P2PKH,
+		P2SH,
+		P2PK,
+		P2WPKH,
+		P2WSH,
+		MultiSig
+	}
+
 	public class ScriptSigs
 	{
 		public ScriptSigs()
@@ -340,7 +367,7 @@ namespace NBitcoin
 		}
 	}
 
-	public class Script
+	public class Script : IEquatable<Script>
 	{
 		static readonly Script _Empty = new Script();
 		public static Script Empty
@@ -351,10 +378,10 @@ namespace NBitcoin
 			}
 		}
 
-		internal byte[] _Script = new byte[0];
+		internal readonly byte[] _Script;
 		public Script()
 		{
-
+			_Script = new byte[0];
 		}
 		public Script(params Op[] ops)
 			: this((IEnumerable<Op>)ops)
@@ -392,6 +419,11 @@ namespace NBitcoin
 			return new Script(data, true, true);
 		}
 
+		public static Script FromHex(string hex)
+		{
+			return FromBytesUnsafe(Encoders.Hex.DecodeData(hex));
+		}
+
 		public Script(byte[] data)
 			: this((IEnumerable<byte>)data)
 		{
@@ -415,7 +447,7 @@ namespace NBitcoin
 			else
 			{
 				ScriptCompressor compressor = new ScriptCompressor();
-				compressor.ReadWrite(data);
+				compressor.ReadWrite(new BitcoinStream(data));
 				_Script = compressor.GetScript()._Script;
 			}
 		}
@@ -429,7 +461,7 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Extract the ScriptCode delimited by the <codeSeparatorIndex>th OP_CODESEPARATOR.
+		/// Extract the ScriptCode delimited by the codeSeparatorIndex th OP_CODESEPARATOR.
 		/// </summary>
 		/// <param name="codeSeparatorIndex">Index of the OP_CODESEPARATOR, or -1 for fetching the whole script</param>
 		/// <returns></returns>
@@ -459,29 +491,29 @@ namespace NBitcoin
 			return new ScriptReader(_Script);
 		}
 
+		private Script FindAndDelete(Op op)
+		{
+			return op == null ? this : FindAndDelete(o => o.Code == op.Code && Utils.ArrayEqual(o.PushData, op.PushData));
+		}
 
-		internal int FindAndDelete(OpcodeType op)
+		internal Script FindAndDelete(byte[] pushedData)
+		{
+			if(pushedData.Length == 0)
+				return this;
+			var standardOp = Op.GetPushOp(pushedData);
+			return FindAndDelete(op =>
+							op.Code == standardOp.Code &&
+							op.PushData != null && Utils.ArrayEqual(op.PushData, pushedData));
+		}
+		internal Script FindAndDelete(OpcodeType op)
 		{
 			return FindAndDelete(new Op()
 			{
 				Code = op
 			});
 		}
-		internal int FindAndDelete(Op op)
-		{
-			return op == null ? 0 : FindAndDelete(o => o.Code == op.Code && Utils.ArrayEqual(o.PushData, op.PushData));
-		}
 
-		internal int FindAndDelete(byte[] pushedData)
-		{
-			if(pushedData.Length == 0)
-				return 0;
-			var standardOp = Op.GetPushOp(pushedData);
-			return FindAndDelete(op =>
-							op.Code == standardOp.Code &&
-							op.PushData != null && Utils.ArrayEqual(op.PushData, pushedData));
-		}
-		internal int FindAndDelete(Func<Op, bool> predicate)
+		private Script FindAndDelete(Func<Op, bool> predicate)
 		{
 			int nFound = 0;
 			List<Op> operations = new List<Op>();
@@ -496,9 +528,8 @@ namespace NBitcoin
 					nFound++;
 			}
 			if(nFound == 0)
-				return 0;
-			_Script = new Script(operations)._Script;
-			return nFound;
+				return this;
+			return new Script(operations);
 		}
 
 		public string ToHex()
@@ -523,6 +554,7 @@ namespace NBitcoin
 		/// <summary>
 		/// True if the scriptPubKey is witness
 		/// </summary>
+		[Obsolete("Use IsScriptType instead")]
 		public bool IsWitness
 		{
 			get
@@ -670,6 +702,7 @@ namespace NBitcoin
 			return (BitcoinScriptAddress)Hash.GetAddress(network);
 		}
 
+		[Obsolete("Use IsScriptType instead")]
 		public bool IsPayToScriptHash
 		{
 			get
@@ -685,7 +718,7 @@ namespace NBitcoin
 
 		public uint GetSigOpCount(Script scriptSig)
 		{
-			if(!IsPayToScriptHash)
+			if(!IsScriptType(ScriptType.P2SH))
 				return GetSigOpCount(true);
 			// This is a pay-to-script-hash scriptPubKey;
 			// get the last item that the scriptSig
@@ -700,8 +733,31 @@ namespace NBitcoin
 			return StandardScripts.GetTemplateFromScriptPubKey(this);
 		}
 
+		public bool IsScriptType(ScriptType type)
+		{
+			switch (type)
+			{
+				case ScriptType.Witness:
+					return PayToWitTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.P2PKH:
+					return PayToPubkeyHashTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.P2SH:
+					return PayToScriptHashTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.P2PK:
+					return PayToPubkeyTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.P2WPKH:
+					return PayToWitPubKeyHashTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.P2WSH:
+					return PayToWitScriptHashTemplate.Instance.CheckScriptPubKey(this);
+				case ScriptType.MultiSig:
+					return PayToMultiSigTemplate.Instance.CheckScriptPubKey(this);
+				default:
+					throw new ArgumentOutOfRangeException(nameof(type), type, "The value is not a valid script type");
+			}
+		}
+
 		/// <summary>
-		/// Extract P2SH or P2PH address from scriptSig
+		/// Extract P2SH or P2PKH address from scriptSig
 		/// </summary>
 		/// <param name="network">The network</param>
 		/// <returns></returns>
@@ -712,7 +768,7 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Extract P2SH or P2PH id from scriptSig
+		/// Extract P2SH or P2PKH id from scriptSig
 		/// </summary>
 		/// <returns>The network</returns>
 		public TxDestination GetSigner()
@@ -727,7 +783,7 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Extract P2SH/P2PH/P2WSH/P2WPKH address from scriptPubKey
+		/// Extract P2SH/P2PKH/P2WSH/P2WPKH address from scriptPubKey
 		/// </summary>
 		/// <param name="network"></param>
 		/// <returns></returns>
@@ -738,7 +794,7 @@ namespace NBitcoin
 		}
 
 		/// <summary>
-		/// Extract P2SH/P2PH/P2WSH/P2WPKH id from scriptPubKey
+		/// Extract P2SH/P2PKH/P2WSH/P2WPKH id from scriptPubKey
 		/// </summary>
 		/// <param name="network"></param>
 		/// <returns></returns>
@@ -777,6 +833,9 @@ namespace NBitcoin
 			}
 			return result.ToArray();
 		}
+
+		public PubKey[] GetAllPubKeys() =>
+			ToOps().Where(op => op.PushData != null && PubKey.Check(op.PushData, true)).Select(op => new PubKey(op.PushData)).ToArray();
 
 		/// <summary>
 		/// Get script byte array
@@ -818,29 +877,46 @@ namespace NBitcoin
 			return @unsafe ? _Script : _Script.ToArray();
 		}
 
+		public WitScript ToWitScript() => new WitScript(this);
+
 		public byte[] ToCompressedBytes()
 		{
 			var compressor = new ScriptCompressor(this);
 			return compressor.ToBytes();
 		}
 
+		[Obsolete("Use VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined) instead")]
 		public static bool VerifyScript(Script scriptSig, Script scriptPubKey, Transaction tx, int i, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined)
 		{
 			ScriptError unused;
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, null, scriptVerify, sigHash, out unused);
 		}
 
+		[Obsolete("Use VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined) instead")]
 		public static bool VerifyScript(Script scriptSig, Script scriptPubKey, Transaction tx, int i, Money value, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined)
 		{
 			ScriptError unused;
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, value, scriptVerify, sigHash, out unused);
 		}
 
+		public static bool VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined)
+		{
+			ScriptError unused;
+			return VerifyScript(scriptSig, tx, i, spentOutput, scriptVerify, sigHash, out unused);
+		}
+
+		[Obsolete("Use VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, out ScriptError error) instead")]
 		public static bool VerifyScript(Script scriptSig, Script scriptPubKey, Transaction tx, int i, Money value, out ScriptError error)
 		{
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, value, ScriptVerify.Standard, SigHash.Undefined, out error);
 		}
 
+		public static bool VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, out ScriptError error)
+		{
+			return VerifyScript(scriptSig, tx, i, spentOutput, ScriptVerify.Standard, SigHash.Undefined, out error);
+		}
+
+		[Obsolete("Use VerifyScript(Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined) instead")]
 		public static bool VerifyScript(Script scriptPubKey, Transaction tx, int i, Money value, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined)
 		{
 			ScriptError unused;
@@ -848,18 +924,40 @@ namespace NBitcoin
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, value, scriptVerify, sigHash, out unused);
 		}
 
+		public static bool VerifyScript(Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify = ScriptVerify.Standard, SigHash sigHash = SigHash.Undefined)
+		{
+			ScriptError unused;
+			var scriptSig = tx.Inputs[i].ScriptSig;
+			return VerifyScript(scriptSig, tx, i, spentOutput, scriptVerify, sigHash, out unused);
+		}
+
+		[Obsolete("Use VerifyScript(Transaction tx, int i, TxOut spentOutput, out ScriptError error) instead")]
 		public static bool VerifyScript(Script scriptPubKey, Transaction tx, int i, Money value, out ScriptError error)
 		{
 			var scriptSig = tx.Inputs[i].ScriptSig;
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, value, ScriptVerify.Standard, SigHash.Undefined, out error);
 		}
 
+		public static bool VerifyScript(Transaction tx, int i, TxOut spentOutput, out ScriptError error)
+		{
+			var scriptSig = tx.Inputs[i].ScriptSig;
+			return VerifyScript(scriptSig, tx, i, spentOutput, ScriptVerify.Standard, SigHash.Undefined, out error);
+		}
+
+		[Obsolete("Use VerifyScript(Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error) instead")]
 		public static bool VerifyScript(Script scriptPubKey, Transaction tx, int i, Money value, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error)
 		{
 			var scriptSig = tx.Inputs[i].ScriptSig;
 			return VerifyScript(scriptSig, scriptPubKey, tx, i, value, scriptVerify, sigHash, out error);
 		}
 
+		public static bool VerifyScript(Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error)
+		{
+			var scriptSig = tx.Inputs[i].ScriptSig;
+			return VerifyScript(scriptSig, tx, i, spentOutput, scriptVerify, sigHash, out error);
+		}
+
+		[Obsolete("Use VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error) instead")]
 		public static bool VerifyScript(Script scriptSig, Script scriptPubKey, Transaction tx, int i, Money value, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error)
 		{
 			var eval = new ScriptEvaluationContext
@@ -872,10 +970,23 @@ namespace NBitcoin
 			return result;
 		}
 
+		public static bool VerifyScript(Script scriptSig, Transaction tx, int i, TxOut spentOutput, ScriptVerify scriptVerify, SigHash sigHash, out ScriptError error)
+		{
+			if (spentOutput == null)
+				throw new ArgumentNullException(nameof(spentOutput));
+			var eval = new ScriptEvaluationContext
+			{
+				SigHash = sigHash,
+				ScriptVerify = scriptVerify
+			};
+			var result = eval.VerifyScript(scriptSig, tx, i, spentOutput);
+			error = eval.Error;
+			return result;
+		}
+
 
 #if !NOCONSENSUSLIB
 
-		public const string LibConsensusDll = "libbitcoinconsensus.dll";
 		public enum BitcoinConsensusError
 		{
 			ERR_OK = 0,
@@ -889,10 +1000,12 @@ namespace NBitcoin
 		/// txTo correctly spends the scriptPubKey pointed to by scriptPubKey under
 		/// the additional constraints specified by flags.
 		/// If not NULL, err will contain an error/success code for the operation
-		[DllImport(LibConsensusDll, EntryPoint = "bitcoinconsensus_verify_script", CallingConvention = CallingConvention.Cdecl)]
+		[DefaultDllImportSearchPathsAttribute(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
+		[DllImport("libbitcoinconsensus", EntryPoint = "bitcoinconsensus_verify_script", CallingConvention = CallingConvention.Cdecl)]
 		private static extern int VerifyScriptConsensus(byte[] scriptPubKey, uint scriptPubKeyLen, byte[] txTo, uint txToLen, uint nIn, ScriptVerify flags, ref BitcoinConsensusError err);
 
-		[DllImport(LibConsensusDll, EntryPoint = "bitcoinconsensus_verify_script_with_amount", CallingConvention = CallingConvention.Cdecl)]
+		[DefaultDllImportSearchPathsAttribute(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
+		[DllImport("libbitcoinconsensus", EntryPoint = "bitcoinconsensus_verify_script_with_amount", CallingConvention = CallingConvention.Cdecl)]
 		static extern int VerifyScriptConsensusWithAmount(byte[] scriptPubKey, uint scriptPubKeyLen, long amount, byte[] txTo, uint txToLen, uint nIn, ScriptVerify flags, ref BitcoinConsensusError err);
 
 		public static bool VerifyScriptConsensus(Script scriptPubKey, Transaction tx, uint nIn, ScriptVerify flags)
@@ -920,7 +1033,8 @@ namespace NBitcoin
 			var scriptPubKeyBytes = scriptPubKey.ToBytes();
 			var txToBytes = tx.ToBytes();
 			err = BitcoinConsensusError.ERR_OK;
-			var valid = VerifyScriptConsensusWithAmount(scriptPubKeyBytes, (uint)scriptPubKeyBytes.Length, amount.Satoshi, txToBytes, (uint)txToBytes.Length, nIn, flags, ref err);
+
+			int	valid = VerifyScriptConsensusWithAmount(scriptPubKeyBytes, (uint)scriptPubKeyBytes.Length, amount.Satoshi, txToBytes, (uint)txToBytes.Length, 0, flags & ScriptVerify.Consensus, ref err);
 			return valid == 1;
 		}
 #endif
@@ -941,8 +1055,10 @@ namespace NBitcoin
 		public override bool Equals(object obj)
 		{
 			Script item = obj as Script;
-			return item != null && Utils.ArrayEqual(item._Script, _Script);
+			return Equals(item);
 		}
+
+		public bool Equals(Script item) => item != null && Utils.ArrayEqual(item._Script, _Script);
 		public static bool operator ==(Script a, Script b)
 		{
 			if(ReferenceEquals(a, b))

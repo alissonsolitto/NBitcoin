@@ -36,6 +36,7 @@ namespace NBitcoin.Policy
 			get;
 			set;
 		}
+		public Money MinFee { get; set; }
 
 		public ScriptVerify? ScriptVerify
 		{
@@ -67,7 +68,7 @@ namespace NBitcoin.Policy
 		public TransactionPolicyError[] Check(Transaction transaction, ICoin[] spentCoins)
 		{
 			if(transaction == null)
-				throw new ArgumentNullException("transaction");
+				throw new ArgumentNullException(nameof(transaction));
 
 			spentCoins = spentCoins ?? new ICoin[0];
 
@@ -83,7 +84,7 @@ namespace NBitcoin.Policy
 					if(ScriptVerify != null)
 					{
 						ScriptError error;
-						if(!VerifyScript(input, coin.TxOut.ScriptPubKey, coin.TxOut.Value, ScriptVerify.Value, out error))
+						if(!VerifyScript(input, coin.TxOut, ScriptVerify.Value, out error))
 						{
 							errors.Add(new ScriptPolicyError(input, error, ScriptVerify.Value, coin.TxOut.ScriptPubKey));
 						}
@@ -119,8 +120,7 @@ namespace NBitcoin.Policy
 			{
 				foreach(var txout in transaction.Outputs.AsCoins())
 				{
-					var template = StandardScripts.GetTemplateFromScriptPubKey(txout.ScriptPubKey);
-					if(template == null)
+					if(!Strategy.IsStandardOutput(txout.TxOut))
 						errors.Add(new OutputPolicyError("Non-Standard scriptPubKey", (int)txout.Outpoint.N));
 				}
 			}
@@ -135,20 +135,27 @@ namespace NBitcoin.Policy
 			var fees = transaction.GetFee(spentCoins);
 			if(fees != null)
 			{
+				var virtualSize = transaction.GetVirtualSize();
 				if(CheckFee)
 				{
 					if(MaxTxFee != null)
 					{
-						var max = MaxTxFee.GetFee(txSize);
+						var max = MaxTxFee.GetFee(virtualSize);
 						if(fees > max)
 							errors.Add(new FeeTooHighPolicyError(fees, max));
+					}
+
+					if (MinFee != null)
+					{
+						if (fees < MinFee)
+							errors.Add(new FeeTooLowPolicyError(fees, MinFee));
 					}
 
 					if(MinRelayTxFee != null)
 					{
 						if(MinRelayTxFee != null)
 						{
-							var min = MinRelayTxFee.GetFee(txSize);
+							var min = MinRelayTxFee.GetFee(virtualSize);
 							if(fees < min)
 								errors.Add(new FeeTooLowPolicyError(fees, min));
 						}
@@ -175,19 +182,26 @@ namespace NBitcoin.Policy
 			return bytes.Length > 0 && bytes[0] == (byte)OpcodeType.OP_RETURN;
 		}
 
-		private bool VerifyScript(IndexedTxIn input, Script scriptPubKey, Money value, ScriptVerify scriptVerify, out ScriptError error)
+		private bool VerifyScript(IndexedTxIn input, TxOut spentOutput, ScriptVerify scriptVerify, out ScriptError error)
 		{
+
 #if !NOCONSENSUSLIB
 			if(!UseConsensusLib)
 #endif
-				return input.VerifyScript(scriptPubKey, value, scriptVerify, out error);
+			{
+				if(input.Transaction is IHasForkId)
+					scriptVerify |= NBitcoin.ScriptVerify.ForkId;
+				return input.VerifyScript(spentOutput, scriptVerify, out error);
+			}
 #if !NOCONSENSUSLIB
 			else
 			{
-				var ok = Script.VerifyScriptConsensus(scriptPubKey, input.Transaction, input.Index, scriptVerify);
+			if(input.Transaction is IHasForkId)
+					scriptVerify |= (NBitcoin.ScriptVerify)(1U << 16);
+				var ok = Script.VerifyScriptConsensus(spentOutput.ScriptPubKey, input.Transaction, input.Index, scriptVerify);
 				if(!ok)
 				{
-					if(input.VerifyScript(scriptPubKey, scriptVerify, out error))
+					if(input.VerifyScript(spentOutput, scriptVerify, out error))
 						error = ScriptError.UnknownError;
 					return false;
 				}
@@ -202,6 +216,8 @@ namespace NBitcoin.Policy
 
 		#endregion
 
+		public StandardTransactionPolicyStrategy Strategy { get; set; } = StandardTransactionPolicyStrategy.Instance;
+
 		public StandardTransactionPolicy Clone()
 		{
 			return new StandardTransactionPolicy()
@@ -215,7 +231,8 @@ namespace NBitcoin.Policy
 #endif
 				CheckMalleabilitySafe = CheckMalleabilitySafe,
 				CheckScriptPubKey = CheckScriptPubKey,
-				CheckFee = CheckFee
+				CheckFee = CheckFee,
+				Strategy = Strategy
 			};
 		}
 
@@ -226,6 +243,16 @@ namespace NBitcoin.Policy
 		{
 			get;
 			set;
+		}
+	}
+
+	public class StandardTransactionPolicyStrategy
+	{
+        public static StandardTransactionPolicyStrategy Instance { get; } = new StandardTransactionPolicyStrategy();
+
+		public virtual bool IsStandardOutput(TxOut txout)
+		{
+			return StandardScripts.GetTemplateFromScriptPubKey(txout.ScriptPubKey) != null;
 		}
 	}
 }

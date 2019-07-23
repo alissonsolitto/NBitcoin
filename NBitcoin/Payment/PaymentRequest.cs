@@ -10,20 +10,21 @@ using System.Net.Http;
 #endif
 using System.Text;
 using System.Text.RegularExpressions;
-#if WIN
+#if CLASSICDOTNET
 using System.Security.Cryptography.X509Certificates;
 #endif
 using System.Threading.Tasks;
 
 namespace NBitcoin.Payment
 {
+	[Obsolete("BIP70 is obsolete")]
 	public enum PKIType
 	{
 		None,
 		X509SHA256,
 		X509SHA1,
 	}
-
+	[Obsolete("BIP70 is obsolete")]
 	public class PaymentOutput
 	{
 		public PaymentOutput()
@@ -105,6 +106,7 @@ namespace NBitcoin.Payment
 			writer.WriteBytes(Script == null ? new byte[0] : Script.ToBytes(true));
 		}
 	}
+	[Obsolete("BIP70 is obsolete")]
 	public class PaymentDetails
 	{
 		public PaymentDetails()
@@ -267,7 +269,7 @@ namespace NBitcoin.Payment
 			}
 		}
 	}
-
+	[Obsolete("BIP70 is obsolete")]
 	public class PaymentRequest
 	{
 		class RecorderStream : Stream
@@ -674,7 +676,7 @@ namespace NBitcoin.Payment
 			return signed;
 		}
 
-#if WIN
+#if CLASSICDOTNET
 		public void Sign(X509Certificate2 certificate, Payment.PKIType type)
 		{
 			Sign((object)certificate, type);
@@ -687,7 +689,7 @@ namespace NBitcoin.Payment
 		public void Sign(object certificate, Payment.PKIType type)
 		{
 			if(certificate == null)
-				throw new ArgumentNullException("certificate");
+				throw new ArgumentNullException(nameof(certificate));
 			if(type == Payment.PKIType.None)
 				throw new ArgumentException("PKIType can't be none if signing");
 			var signer = GetCertificateProvider().GetSigner();

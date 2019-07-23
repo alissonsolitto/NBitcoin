@@ -1,5 +1,4 @@
-﻿using NBitcoin;
-using NBitcoin.Crypto;
+﻿using NBitcoin.Crypto;
 using NBitcoin.DataEncoders;
 using NBitcoin.Protocol;
 using NBitcoin.RPC;
@@ -71,6 +70,11 @@ namespace NBitcoin.Tests
 		{
 			get; set;
 		}
+		public string CreateFolder
+		{
+			get;
+			internal set;
+		}
 	}
 
 	public partial class NodeDownloadData
@@ -94,6 +98,7 @@ namespace NBitcoin.Tests
 		{
 			get; set;
 		}
+		public string RegtestFolderName { get; set; }
 
 		public NodeOSDownloadData GetCurrentOSDownloadData()
 		{
@@ -105,22 +110,24 @@ namespace NBitcoin.Tests
 	}
 	public class NodeBuilder : IDisposable
 	{
-		public static NodeBuilder Create(NodeDownloadData downloadData, Network network = null, [CallerMemberNameAttribute]string caller = null)
+		public static NodeBuilder Create(NodeDownloadData downloadData, Network network = null, [CallerMemberNameAttribute]string caller = null, bool showNodeConsole = false)
 		{
 			network = network ?? Network.RegTest;
 			var isFilePath = downloadData.Version.Length >= 2 && downloadData.Version[1] == ':';
 			var path = isFilePath ? downloadData.Version : EnsureDownloaded(downloadData);
 			if(!Directory.Exists(caller))
 				Directory.CreateDirectory(caller);
-			return new NodeBuilder(caller, path) { Network = network };
+			return new NodeBuilder(caller, path) { Network = network, NodeImplementation = downloadData, ShowNodeConsole = showNodeConsole };
 		}
 
-		private static string EnsureDownloaded(NodeDownloadData downloadData)
+		public static string EnsureDownloaded(NodeDownloadData downloadData)
 		{
 			if(!Directory.Exists("TestData"))
 				Directory.CreateDirectory("TestData");
 
 			var osDownloadData = downloadData.GetCurrentOSDownloadData();
+			if (osDownloadData == null)
+				throw new Exception("This platform does not support tests involving this crypto currency, DownloadData for this OS are unavailable");
 			var bitcoind = Path.Combine("TestData", String.Format(osDownloadData.Executable, downloadData.Version));
 			var zip = Path.Combine("TestData", String.Format(osDownloadData.Archive, downloadData.Version));
 			if(File.Exists(bitcoind))
@@ -133,13 +140,21 @@ namespace NBitcoin.Tests
 			CheckHash(osDownloadData, data);
 			File.WriteAllBytes(zip, data);
 
+			var extractDirectory = "TestData";
+			if(osDownloadData.CreateFolder != null)
+			{
+				if(!Directory.Exists(osDownloadData.CreateFolder))
+					Directory.CreateDirectory(osDownloadData.CreateFolder);
+				extractDirectory = Path.Combine(extractDirectory, string.Format(osDownloadData.CreateFolder, downloadData.Version));
+			}
+
 			if(RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
-				ZipFile.ExtractToDirectory(zip, new FileInfo(zip).Directory.FullName);
+				ZipFile.ExtractToDirectory(zip, extractDirectory);
 			}
 			else
 			{
-				Process.Start("tar", "-zxvf " + zip + " -C TestData").WaitForExit();
+				Process.Start("tar", "-zxvf " + zip + " -C " + extractDirectory).WaitForExit();
 			}
 			File.Delete(zip);
 			return bitcoind;
@@ -148,62 +163,38 @@ namespace NBitcoin.Tests
 		private static void CheckHash(NodeOSDownloadData osDownloadData, byte[] data)
 		{
 			var actual = Encoders.Hex.EncodeData(Hashes.SHA256(data));
-			if(actual != osDownloadData.Hash)
+			if(!actual.Equals(osDownloadData.Hash, StringComparison.OrdinalIgnoreCase))
 				throw new Exception($"Hash of downloaded file does not match (Expected: {osDownloadData.Hash}, Actual: {actual})");
 		}
 
 		int last = 0;
 		private string _Root;
-		private string _Bitcoind;
+
+		public bool ShowNodeConsole { private set; get; }
+
+		public string BitcoinD { get; }
+
+		public List<CoreNode> Nodes { get; } = new List<CoreNode>();
+
+		public NodeConfigParameters ConfigParameters { get; } = new NodeConfigParameters();
+
 		public NodeBuilder(string root, string bitcoindPath)
 		{
 			this._Root = root;
-			this._Bitcoind = bitcoindPath;
+			this.BitcoinD = bitcoindPath;
 		}
 
-		public string BitcoinD
-		{
-			get
-			{
-				return _Bitcoind;
-			}
-		}
-
-		public bool CleanBeforeStartingNode
+        public bool CleanBeforeStartingNode
 		{
 			get; set;
 		} = true;
-
-
-		private readonly List<CoreNode> _Nodes = new List<CoreNode>();
-		public List<CoreNode> Nodes
-		{
-			get
-			{
-				return _Nodes;
-			}
-		}
-
-
-		private readonly NodeConfigParameters _ConfigParameters = new NodeConfigParameters();
-		public NodeConfigParameters ConfigParameters
-		{
-			get
-			{
-				return _ConfigParameters;
-			}
-		}
-
+       
 		public Network Network
 		{
 			get;
 			set;
 		} = Network.RegTest;
-		public bool SupportCookieFile
-		{
-			get;
-			set;
-		} = true;
+		public NodeDownloadData NodeImplementation { get; private set; }
 
 		public CoreNode CreateNode(bool start = false)
 		{
@@ -296,7 +287,7 @@ namespace NBitcoin.Tests
 				try
 				{
 
-					this.CreateRPCClient().SendCommand("stop");
+					this.CreateRPCClient().Stop();
 				}
 				catch
 				{
@@ -325,7 +316,7 @@ namespace NBitcoin.Tests
 					throw new InvalidOperationException("You seem to have a running node from a previous test, please kill the process and restart the test.");
 			}
 
-			CookieAuth = builder.SupportCookieFile;
+			CookieAuth = NodeImplementation.SupportCookieFile;
 			Directory.CreateDirectory(folder);
 			Directory.CreateDirectory(dataDir);
 			FindPorts(ports);
@@ -336,7 +327,7 @@ namespace NBitcoin.Tests
 			if(!CookieAuth)
 				return creds.UserName + ":" + creds.Password;
 			else
-				return "cookiefile=" + Path.Combine(dataDir, "regtest", ".cookie");
+				return "cookiefile=" + Path.Combine(dataDir, this._Builder.NodeImplementation.RegtestFolderName ?? "regtest", ".cookie");
 		}
 
 		private void ExtractPorts(int[] ports, string config)
@@ -449,10 +440,28 @@ namespace NBitcoin.Tests
 			get; set;
 		}
 
+		NodeDownloadData _NodeImplementation;
+		public NodeDownloadData NodeImplementation
+		{
+			get
+			{
+				return _NodeImplementation ?? this._Builder.NodeImplementation;
+			}
+			set
+			{
+				_NodeImplementation = value;
+			}
+		}
+
 		public async Task StartAsync()
 		{
 			NodeConfigParameters config = new NodeConfigParameters();
-			config.Add("regtest", "1");
+			StringBuilder configStr = new StringBuilder();
+			configStr.AppendLine("regtest=1");
+			if (NodeImplementation.UseSectionInConfigFile)
+			{
+				configStr.AppendLine("[regtest]");
+			}
 			config.Add("rest", "1");
 			config.Add("server", "1");
 			config.Add("txindex", "1");
@@ -466,10 +475,13 @@ namespace NBitcoin.Tests
 			else
 				config.Add("whitebind", "127.0.0.1:" + ports[0].ToString());
 			config.Add("rpcport", ports[1].ToString());
-			config.Add("printtoconsole", "1");
+			config.Add("printtoconsole", _Builder.ShowNodeConsole ? "1" : "0");
 			config.Add("keypool", "10");
 			config.Import(ConfigParameters, true);
-			File.WriteAllText(_Config, config.ToString());
+			configStr.AppendLine(config.ToString());
+			if (NodeImplementation.AdditionalRegtestConfig != null)
+				configStr.AppendLine(NodeImplementation.AdditionalRegtestConfig);
+			File.WriteAllText(_Config, configStr.ToString());
 			await Run();
 		}
 
@@ -477,7 +489,20 @@ namespace NBitcoin.Tests
 		{
 			lock(l)
 			{
-				_Process = Process.Start(new FileInfo(this._Builder.BitcoinD).FullName, "-conf=bitcoin.conf" + " -datadir=" + dataDir + " -debug=net");
+				string appPath = new FileInfo(this._Builder.BitcoinD).FullName;
+				string args = "-conf=bitcoin.conf" + " -datadir=" + dataDir + " -debug=net";
+
+				if (_Builder.ShowNodeConsole == true)
+				{
+					ProcessStartInfo info = new ProcessStartInfo(appPath, args);
+					info.UseShellExecute = true;
+					_Process = Process.Start(info);
+				}
+				else
+				{
+					_Process = Process.Start(appPath, args);
+				}
+
 				_State = CoreNodeState.Starting;
 			}
 			while(true)
@@ -521,7 +546,16 @@ namespace NBitcoin.Tests
 
 		public uint256[] Generate(int blockCount)
 		{
-			return CreateRPCClient().Generate(blockCount);
+			uint256[] blockIds = new uint256[blockCount];
+			int generated = 0;
+			while(generated < blockCount)
+			{
+				foreach(var id in CreateRPCClient().Generate(blockCount - generated))
+				{
+					blockIds[generated++] = id;
+				}
+			}
+			return blockIds;
 		}
 
 		public void Broadcast(params Transaction[] transactions)
@@ -532,7 +566,7 @@ namespace NBitcoin.Tests
 			{
 				batch.SendRawTransactionAsync(tx);
 			}
-			rpc.SendBatch();
+			batch.SendBatch();
 		}
 
 		object l = new object();
